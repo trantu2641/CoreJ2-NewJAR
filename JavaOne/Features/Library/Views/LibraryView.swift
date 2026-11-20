@@ -60,7 +60,14 @@ struct LibraryView: View {
                 }
                 .navigationDestination(item: gameToLaunchBinding) { game in
                     if let emulatorViewModel = viewModel.activeEmulatorViewModel {
-                        EmulatorView(viewModel: emulatorViewModel, game: game)
+                        EmulatorView(
+                            viewModel: emulatorViewModel,
+                            game: game,
+                            availableGames: viewModel.games,
+                            onClose: {
+                                viewModel.dismissEmulator()
+                            }
+                        )
                     }
                 }
         }
