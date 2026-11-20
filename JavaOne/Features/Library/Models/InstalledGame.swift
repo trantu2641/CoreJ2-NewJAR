@@ -1,7 +1,7 @@
 import Foundation
 
 /// A Java ME game owned by JavaOne's internal library.
-struct InstalledGame: Identifiable, Equatable, Hashable {
+struct InstalledGame: Identifiable, Equatable, Hashable, Codable {
     let id: UUID
     let title: String
     let jarURL: URL

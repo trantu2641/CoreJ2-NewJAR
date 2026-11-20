@@ -1,19 +1,13 @@
 import Foundation
-import SwiftData
 
-/// SwiftData persistence model for an installed Java ME game.
-@Model
-final class InstalledGameEntity {
-
-    // MARK: - Properties
-
-    @Attribute(.unique) var id: UUID
+/// File-persistence record for an installed Java ME game.
+/// Kept separate from the domain model to preserve the existing structure.
+struct InstalledGameEntity: Codable {
+    let id: UUID
     var title: String
     var jarPath: String
     var importedAt: Date
     var contentHash: String
-
-    // MARK: - Init
 
     init(
         id: UUID,
@@ -29,9 +23,6 @@ final class InstalledGameEntity {
         self.contentHash = contentHash
     }
 
-    // MARK: - Mapping
-
-    /// Maps this entity to the domain model.
     func toDomain() -> InstalledGame {
         InstalledGame(
             id: id,
@@ -39,6 +30,16 @@ final class InstalledGameEntity {
             jarURL: URL(fileURLWithPath: jarPath),
             importedAt: importedAt,
             contentHash: contentHash
+        )
+    }
+
+    static func fromDomain(_ game: InstalledGame) -> InstalledGameEntity {
+        InstalledGameEntity(
+            id: game.id,
+            title: game.title,
+            jarPath: game.jarURL.path,
+            importedAt: game.importedAt,
+            contentHash: game.contentHash
         )
     }
 }
