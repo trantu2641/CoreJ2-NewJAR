@@ -129,7 +129,7 @@ struct LibraryView: View {
         }
     }
 
-    // MARK: - iOS 16 Navigation
+    // MARK: - Bindings
 
     private var emulatorDestination: some View {
         Group {
@@ -139,9 +139,7 @@ struct LibraryView: View {
                     viewModel: emulatorViewModel,
                     game: game,
                     availableGames: viewModel.games,
-                    onClose: {
-                        viewModel.dismissEmulator()
-                    }
+                    onClose: { viewModel.dismissEmulator() }
                 )
             } else {
                 EmptyView()
@@ -153,24 +151,7 @@ struct LibraryView: View {
         Binding(
             get: { viewModel.gameToLaunch != nil },
             set: { isActive in
-                if !isActive {
-                    viewModel.dismissEmulator()
-                }
-            }
-        )
-    }
-
-    // MARK: - Bindings
-
-    private var gameToLaunchBinding: Binding<InstalledGame?> {
-        Binding(
-            get: { viewModel.gameToLaunch },
-            set: { newValue in
-                if newValue == nil {
-                    viewModel.dismissEmulator()
-                } else {
-                    viewModel.gameToLaunch = newValue
-                }
+                if !isActive { viewModel.dismissEmulator() }
             }
         )
     }
@@ -199,10 +180,11 @@ struct LibraryView: View {
 
     // MARK: - File Types
 
-    private static let jarContentTypes: [UTType] = [
-        UTType(filenameExtension: "jar")
+    private static let jarContentTypes: [UTType] = {
+        let jarType = UTType(filenameExtension: "jar")
             ?? UTType(exportedAs: "com.javaonelabs.java-archive")
-    ]
+        return [jarType, .zip, .data]
+    }()
 }
 
 // MARK: - Previews
