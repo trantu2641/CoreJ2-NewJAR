@@ -9,7 +9,7 @@ struct LibraryView: View {
         self.viewModel = viewModel
     }
 
-    var body: some View {
+    body: some View {
         NavigationStack {
             content
                 .navigationTitle("Library")
@@ -20,13 +20,9 @@ struct LibraryView: View {
                         }
                     }
                 }
-                // Do not filter the Files picker by a custom UTType.
-                // iOS may not register .jar as a public type, which can make
-                // JAR files disappear from the picker. Pick data files and
-                // validate the .jar extension in FileImportService.
                 .fileImporter(
                     isPresented: $isImportPresented,
-                    allowedContentTypes: [UTType.data],
+                    allowedContentTypes: Self.jarContentTypes,
                     allowsMultipleSelection: false
                 ) { result in
                     viewModel.handleImportResult(result)
@@ -172,4 +168,13 @@ struct LibraryView: View {
             }
         )
     }
+
+    private static let jarContentTypes: [UTType] = {
+        let jarType = UTType(filenameExtension: "jar")
+            ?? UTType(exportedAs: "com.javaonelabs.java-archive")
+
+        // Keep public.data as a fallback for Files/iCloud providers that
+        // expose a JAR as generic binary data.
+        return [jarType, .data]
+    }()
 }
