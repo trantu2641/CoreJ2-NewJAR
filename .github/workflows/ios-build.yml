@@ -1,12 +1,10 @@
-name: Build CoreJ2 iOS
+name: Build CoreJ2 iOS 16.4 Full Runtime
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -14,7 +12,7 @@ permissions:
 
 jobs:
   build-ios:
-    name: Build CoreJ2 IPA
+    name: Build CoreJ2 IPA with Embedded OpenJDK + FreeJ2ME
     runs-on: macos-26
 
     steps:
@@ -27,97 +25,106 @@ jobs:
       - name: Select installed Xcode
         run: |
           set -e
-
-          echo "Installed Xcode versions:"
-          ls -d /Applications/Xcode*.app || true
-
-          # macos-15 runners currently provide Xcode 26.x.
-          # Do not request Xcode 16.4 because it is not installed.
-          XCODE_PATH="/Applications/Xcode_26.6.app"
-
-          if [ ! -d "$XCODE_PATH" ]; then
-            XCODE_PATH="$(find /Applications -maxdepth 1 -type d -name 'Xcode*.app' | sort -V | tail -n 1)"
-          fi
-
-          if [ -z "$XCODE_PATH" ] || [ ! -d "$XCODE_PATH" ]; then
-            echo "::error::Không tìm thấy Xcode trên runner."
-            exit 1
-          fi
-
+          XCODE_PATH="$(find /Applications -maxdepth 1 -type d -name 'Xcode*.app' | sort -V | tail -n 1)"
+          test -n "$XCODE_PATH"
           sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
-
-          echo "Selected Xcode:"
-          xcode-select -p
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
-      - name: Show build environment
+      - name: Install build dependencies
         run: |
-          set -e
-          xcodebuild -version
-          xcode-select -p
-          xcrun --sdk iphoneos --show-sdk-version
-          git submodule status --recursive
+          brew update
+          brew install autoconf ant
 
-      - name: Verify project
-        run: |
-          set -e
-          test -f JavaOne.xcodeproj/project.pbxproj
-          echo "JavaOne.xcodeproj OK"
+      - name: Install JDK 24
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '24'
 
-      - name: Build iOS app
+      - name: Prepare embedded runtime
         run: |
           set -o pipefail
-          mkdir -p build
+          ./scripts/ios-runtime/prepare-runtime.sh 2>&1 | tee build-runtime.log
 
-          xcodebuild             -project JavaOne.xcodeproj             -scheme JavaOne             -configuration Release             -sdk iphoneos             -destination 'generic/platform=iOS'             -derivedDataPath build/DerivedData             CODE_SIGNING_ALLOWED=NO             CODE_SIGNING_REQUIRED=NO             CODE_SIGN_IDENTITY=""             IPHONEOS_DEPLOYMENT_TARGET=16.4             build 2>&1 | tee build/xcodebuild.log
-
-      - name: Find built app
+      - name: Verify runtime artifacts
         run: |
           set -e
+          test -f build/ios-runtime/lib/libjvm.a
+          test -f build/ios-runtime/freej2me-core.jar
+          test -f build/ios-runtime/CoreJ2Runtime.xcconfig
+          echo '=== Runtime manifest ==='
+          cat build/ios-runtime/RUNTIME-MANIFEST.txt
+          echo '=== Runtime size ==='
+          du -sh build/ios-runtime
+          du -h build/ios-runtime/lib/libjvm.a build/ios-runtime/freej2me-core.jar
 
-          APP_PATH="$(find build/DerivedData/Build/Products             -type d -name '*.app'             -print -quit)"
+      - name: Build CoreJ2
+        run: |
+          set -o pipefail
+          mkdir -p build/DerivedData
+          xcodebuild \
+            -project JavaOne.xcodeproj \
+            -scheme JavaOne \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            -xcconfig build/ios-runtime/CoreJ2Runtime.xcconfig \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            IPHONEOS_DEPLOYMENT_TARGET=16.4 \
+            build 2>&1 | tee build/xcodebuild.log
 
-          if [ -z "$APP_PATH" ]; then
-            echo "::error::Không tìm thấy .app sau khi build."
-            find build/DerivedData/Build/Products -maxdepth 4 -print || true
-            exit 1
-          fi
-
+      - name: Locate app
+        run: |
+          set -e
+          APP_PATH="$(find build/DerivedData/Build/Products -type d -name '*.app' -print -quit)"
+          test -n "$APP_PATH"
           echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
-
-          echo "================================"
-          echo "Built app:"
           echo "$APP_PATH"
-          echo "================================"
+
+      - name: Bundle embedded runtime
+        run: |
+          set -e
+          rm -rf "$APP_PATH/Runtime"
+          cp -R build/ios-runtime "$APP_PATH/Runtime"
+          rm -f "$APP_PATH/Runtime/CoreJ2Runtime.xcconfig" "$APP_PATH/Runtime/RUNTIME-MANIFEST.txt"
+          du -sh "$APP_PATH"
+          ls -lh "$APP_PATH/Runtime/lib/libjvm.a"
+          ls -lh "$APP_PATH/Runtime/freej2me-core.jar"
 
       - name: Create unsigned IPA
         run: |
           set -e
-
           rm -rf build/Payload
           mkdir -p build/Payload
-
           cp -R "$APP_PATH" build/Payload/
-
           cd build
-          rm -f CoreJ2-unsigned.ipa
-          zip -qry CoreJ2-unsigned.ipa Payload
+          zip -qry CoreJ2-iOS16.4-FullRuntime-unsigned.ipa Payload
           cd ..
+          ls -lh build/CoreJ2-iOS16.4-FullRuntime-unsigned.ipa
 
-          ls -lh build/CoreJ2-unsigned.ipa
-
-      - name: Upload IPA
+      - name: Upload full IPA
         uses: actions/upload-artifact@v6
         with:
-          name: CoreJ2-iOS-16.4
-          path: build/CoreJ2-unsigned.ipa
+          name: CoreJ2-iOS-16.4-FullRuntime
+          path: build/CoreJ2-iOS16.4-FullRuntime-unsigned.ipa
           if-no-files-found: error
 
-      - name: Upload build log
+      - name: Upload xcodebuild log
         if: always()
         uses: actions/upload-artifact@v6
         with:
           name: CoreJ2-xcodebuild-log
           path: build/xcodebuild.log
+          if-no-files-found: ignore
+
+      - name: Upload runtime build log
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: CoreJ2-runtime-build-log
+          path: build-runtime.log
           if-no-files-found: ignore
