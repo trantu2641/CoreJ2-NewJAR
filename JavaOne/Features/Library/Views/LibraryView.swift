@@ -58,18 +58,13 @@ struct LibraryView: View {
                 } message: {
                     Text(viewModel.errorMessage ?? "")
                 }
-                .navigationDestination(item: gameToLaunchBinding) { game in
-                    if let emulatorViewModel = viewModel.activeEmulatorViewModel {
-                        EmulatorView(
-                            viewModel: emulatorViewModel,
-                            game: game,
-                            availableGames: viewModel.games,
-                            onClose: {
-                                viewModel.dismissEmulator()
-                            }
-                        )
-                    }
+                NavigationLink(
+                    destination: emulatorDestination,
+                    isActive: gameLaunchIsActiveBinding
+                ) {
+                    EmptyView()
                 }
+                .hidden()
         }
         .onAppear {
             viewModel.loadGames()
@@ -132,6 +127,37 @@ struct LibraryView: View {
             }
             .buttonStyle(.plain)
         }
+    }
+
+    // MARK: - iOS 16 Navigation
+
+    private var emulatorDestination: some View {
+        Group {
+            if let game = viewModel.gameToLaunch,
+               let emulatorViewModel = viewModel.activeEmulatorViewModel {
+                EmulatorView(
+                    viewModel: emulatorViewModel,
+                    game: game,
+                    availableGames: viewModel.games,
+                    onClose: {
+                        viewModel.dismissEmulator()
+                    }
+                )
+            } else {
+                EmptyView()
+            }
+        }
+    }
+
+    private var gameLaunchIsActiveBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.gameToLaunch != nil },
+            set: { isActive in
+                if !isActive {
+                    viewModel.dismissEmulator()
+                }
+            }
+        )
     }
 
     // MARK: - Bindings
