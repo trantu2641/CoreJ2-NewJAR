@@ -1,0 +1,113 @@
+name: Build CoreJ2 iOS
+
+on:
+  push:
+    branches:
+      - main
+
+  pull_request:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-ios:
+    name: Build CoreJ2 IPA
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Select Xcode 16.4
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "16.4"
+
+      - name: Show build environment
+        run: |
+          xcodebuild -version
+          xcode-select -p
+          xcrun --sdk iphoneos --show-sdk-version
+          git submodule status --recursive
+
+      - name: Verify project
+        run: |
+          test -f JavaOne.xcodeproj/project.pbxproj
+          echo "JavaOne.xcodeproj OK"
+
+      - name: Build iOS app
+        run: |
+          set -o pipefail
+
+          mkdir -p build
+
+          xcodebuild \
+            -project JavaOne.xcodeproj \
+            -scheme JavaOne \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            IPHONEOS_DEPLOYMENT_TARGET=16.4 \
+            build 2>&1 | tee build/xcodebuild.log
+
+      - name: Find app
+        run: |
+          set -e
+
+          APP_PATH="$(find build/DerivedData/Build/Products \
+            -type d -name '*.app' \
+            -print -quit)"
+
+          if [ -z "$APP_PATH" ]; then
+            echo "::error::Không tìm thấy .app"
+            exit 1
+          fi
+
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+
+          echo "================================"
+          echo "APP:"
+          echo "$APP_PATH"
+          echo "================================"
+
+      - name: Create unsigned IPA
+        run: |
+          set -e
+
+          rm -rf build/Payload
+          mkdir -p build/Payload
+
+          cp -R "$APP_PATH" build/Payload/
+
+          cd build
+          zip -qry CoreJ2-unsigned.ipa Payload
+          cd ..
+
+          ls -lh build/CoreJ2-unsigned.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v6
+        with:
+          name: CoreJ2-iOS-16.4
+          path: build/CoreJ2-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: CoreJ2-xcodebuild-log
+          path: build/xcodebuild.log
+          if-no-files-found: ignore
