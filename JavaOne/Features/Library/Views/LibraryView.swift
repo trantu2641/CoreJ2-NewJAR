@@ -1,24 +1,13 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Displays the user's Java ME game library and launches the emulator.
 struct LibraryView: View {
-
-    // MARK: - Dependencies
-
     @ObservedObject private var viewModel: LibraryViewModel
-
-    // MARK: - UI State
-
     @State private var isImportPresented = false
-
-    // MARK: - Init
 
     init(viewModel: LibraryViewModel) {
         self.viewModel = viewModel
     }
-
-    // MARK: - Body
 
     var body: some View {
         NavigationStack {
@@ -31,9 +20,13 @@ struct LibraryView: View {
                         }
                     }
                 }
+                // Do not filter the Files picker by a custom UTType.
+                // iOS may not register .jar as a public type, which can make
+                // JAR files disappear from the picker. Pick data files and
+                // validate the .jar extension in FileImportService.
                 .fileImporter(
                     isPresented: $isImportPresented,
-                    allowedContentTypes: Self.jarContentTypes,
+                    allowedContentTypes: [UTType.data],
                     allowsMultipleSelection: false
                 ) { result in
                     viewModel.handleImportResult(result)
@@ -58,20 +51,20 @@ struct LibraryView: View {
                 } message: {
                     Text(viewModel.errorMessage ?? "")
                 }
-                NavigationLink(
-                    destination: emulatorDestination,
-                    isActive: gameLaunchIsActiveBinding
-                ) {
-                    EmptyView()
-                }
-                .hidden()
+                .background(
+                    NavigationLink(
+                        destination: emulatorDestination,
+                        isActive: gameLaunchIsActiveBinding
+                    ) {
+                        EmptyView()
+                    }
+                    .hidden()
+                )
         }
         .onAppear {
             viewModel.loadGames()
         }
     }
-
-    // MARK: - Content
 
     @ViewBuilder
     private var content: some View {
@@ -129,8 +122,6 @@ struct LibraryView: View {
         }
     }
 
-    // MARK: - Bindings
-
     private var emulatorDestination: some View {
         Group {
             if let game = viewModel.gameToLaunch,
@@ -139,7 +130,9 @@ struct LibraryView: View {
                     viewModel: emulatorViewModel,
                     game: game,
                     availableGames: viewModel.games,
-                    onClose: { viewModel.dismissEmulator() }
+                    onClose: {
+                        viewModel.dismissEmulator()
+                    }
                 )
             } else {
                 EmptyView()
@@ -151,7 +144,9 @@ struct LibraryView: View {
         Binding(
             get: { viewModel.gameToLaunch != nil },
             set: { isActive in
-                if !isActive { viewModel.dismissEmulator() }
+                if !isActive {
+                    viewModel.dismissEmulator()
+                }
             }
         )
     }
@@ -175,41 +170,6 @@ struct LibraryView: View {
                     viewModel.dismissErrorMessage()
                 }
             }
-        )
-    }
-
-    // MARK: - File Types
-
-    private static let jarContentTypes: [UTType] = {
-        let jarType = UTType(filenameExtension: "jar")
-            ?? UTType(exportedAs: "com.javaonelabs.java-archive")
-        return [jarType, .zip, .data]
-    }()
-}
-
-// MARK: - Previews
-
-struct LibraryView_Previews: PreviewProvider {
-    static var previews: some View {
-        let repository = InMemoryGameLibraryRepository()
-        LibraryView(
-            viewModel: LibraryViewModel(
-                repository: repository,
-                importEngine: DefaultImportEngine(
-                    pipeline: DefaultImportPipeline(
-                        importService: FileImportService(),
-                        steps: [
-                            ManifestStep(manifestService: JARManifestService()),
-                            HashStep(),
-                            DuplicateDetectionStep(repository: repository),
-                            ArtworkStep()
-                        ]
-                    )
-                ),
-                makeEmulatorViewModel: {
-                    EmulatorViewModel(bridge: DefaultEmulatorBridge())
-                }
-            )
         )
     }
 }
