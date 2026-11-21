@@ -103,12 +103,12 @@ fi
 # ---------------------------------------------------------------------------
 # Download mobile-support
 # ---------------------------------------------------------------------------
-SUPPORT_URL="${MOBILE_SUPPORT_URL:-https://github.com/openjdk/mobile/releases/download/mobile-support-20250106/mobile-support-20250106.zip}"
+SUPPORT_URL="${MOBILE_SUPPORT_URL:-https://download2.gluonhq.com/mobile/mobile-support-20250106.zip}"
 SUPPORT_ZIP="${WORK_DIR}/mobile-support.zip"
 
 if [[ ! -f "${SUPPORT_ZIP}" ]]; then
-    log "Downloading mobile-support..."
-    curl -L --fail --retry 3 --retry-delay 2 -o "${SUPPORT_ZIP}" "${SUPPORT_URL}"
+    log "Downloading mobile-support from: ${SUPPORT_URL}"
+    curl -L --fail --retry 3 --retry-delay 2         -o "${SUPPORT_ZIP}"         "${SUPPORT_URL}"
 fi
 
 rm -rf "${SUPPORT_DIR}"
