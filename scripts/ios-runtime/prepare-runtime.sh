@@ -173,7 +173,24 @@ cd "${OPENJDK_DIR}"
 
 log "Preparing OpenJDK configure script..."
 
-if [[ -x "${OPENJDK_DIR}/configure" ]]; then
+# openjdk/mobile currently tracks the generated configure wrapper in the
+# repository. If a mirror/checkout omitted generated files, restore the
+# exact files from the checked-out remote branch before attempting autoconf.
+if [[ ! -f "${OPENJDK_DIR}/configure" || ! -f "${OPENJDK_DIR}/make/autoconf/configure" ]]; then
+    log "Generated configure files are missing; restoring them from Git..."
+    REMOTE_REF="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+
+    if [[ -n "${REMOTE_REF}" ]]; then
+        git checkout "${REMOTE_REF#origin/}" -- configure make/autoconf/configure 2>/dev/null || true
+    fi
+
+    if [[ ! -f "${OPENJDK_DIR}/configure" ]]; then
+        git checkout master -- configure make/autoconf/configure 2>/dev/null || true
+    fi
+fi
+
+if [[ -f "${OPENJDK_DIR}/configure" ]]; then
+    chmod +x "${OPENJDK_DIR}/configure"
     log "Using existing OpenJDK configure."
 
 elif [[ -x "${OPENJDK_DIR}/autogen.sh" ]]; then
@@ -208,7 +225,7 @@ else
     fi
 fi
 
-[[ -x "${OPENJDK_DIR}/configure" ]] || die "OpenJDK configure script was not generated."
+[[ -f "${OPENJDK_DIR}/configure" ]] || die "OpenJDK configure script was not generated."
 
 # ---------------------------------------------------------------------------
 # Configure OpenJDK Mobile
