@@ -1,251 +1,216 @@
 #!/usr/bin/env bash
+#
+# CoreJ2-NewJAR
+# Prepare the embedded OpenJDK Mobile + FreeJ2ME runtime for iOS.
+#
+# Target:
+#   iOS 16.4+
+#   arm64 / aarch64
+#
+# IMPORTANT:
+# mobile-support-20250106.zip may extract as:
+#   support/support/libffi/...
+#   support/support/cups-2.3.6/...
+# This script normalizes that layout automatically.
+#
+
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-BUILD_ROOT="${ROOT}/build/ios-runtime-work"
-OUT_ROOT="${ROOT}/build/ios-runtime"
-
-OJDK_ROOT="${BUILD_ROOT}/openjdk-mobile"
-SUPPORT_ZIP="${BUILD_ROOT}/mobile-support.zip"
-SUPPORT_ROOT="${BUILD_ROOT}/support"
-
-FREEJ2ME_ROOT="${BUILD_ROOT}/freej2me"
-FREEJ2ME_CLASSES="${BUILD_ROOT}/freej2me-classes"
-
-BOOTSTRAP_ROOT="${ROOT}/JavaOne/Features/Emulator/Runtime/EmbeddedJVM/Bootstrap"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+WORK_ROOT="${ROOT_DIR}/build/ios-runtime-work"
+RUNTIME_ROOT="${ROOT_DIR}/build/ios-runtime"
+OPENJDK_DIR="${WORK_ROOT}/mobile"
+SUPPORT_ROOT="${WORK_ROOT}/support"
+FREEJ2ME_DIR="${WORK_ROOT}/freej2me"
 
 BUILD_CONF="ios-aarch64-zero-release"
+JDK_IMAGE_DIR="${OPENJDK_DIR}/build/${BUILD_CONF}/images/jdk"
+STATIC_LIBS_DIR="${OPENJDK_DIR}/build/${BUILD_CONF}/images/static-libs"
+JVM_LIB_DIR="${STATIC_LIBS_DIR}/lib/zero"
 
-mkdir -p "${BUILD_ROOT}"
-rm -rf "${OUT_ROOT}"
-mkdir -p "${OUT_ROOT}/lib" "${OUT_ROOT}/include" "${OUT_ROOT}/jdk"
+BOOTSTRAP_DIR="${ROOT_DIR}/JavaOne/Features/Emulator/Runtime/EmbeddedJVM/Bootstrap"
+
+OPENJDK_REPO="https://github.com/openjdk/mobile.git"
+FREEJ2ME_REPO="https://github.com/hex007/freej2me.git"
+MOBILE_SUPPORT_URL="https://download2.gluonhq.com/mobile/mobile-support-20250106.zip"
 
 log() {
-    echo
-    echo "============================================================"
-    echo "[CoreJ2 runtime] $*"
-    echo "============================================================"
+    printf '\n[%s] %s\n' "CoreJ2 Runtime" "$*"
 }
 
 fail() {
-    echo "[CoreJ2 runtime] ERROR: $*" >&2
+    printf '\nERROR: %s\n' "$*" >&2
     exit 1
 }
 
-# ------------------------------------------------------------
-# Host tools
-# ------------------------------------------------------------
+need_cmd() {
+    command -v "$1" >/dev/null 2>&1 || fail "Missing required command: $1"
+}
 
-for tool in git curl unzip rsync xcrun; do
-    command -v "${tool}" >/dev/null 2>&1 || fail "${tool} is required."
-done
+find_java_home() {
+    if [[ -n "${JAVA_HOME:-}" && -x "${JAVA_HOME}/bin/java" ]]; then
+        printf '%s\n' "${JAVA_HOME}"
+        return
+    fi
 
-if ! command -v autoconf >/dev/null 2>&1; then
-    command -v brew >/dev/null 2>&1 || fail "autoconf is missing and Homebrew is unavailable."
-    brew install autoconf
-fi
+    if command -v /usr/libexec/java_home >/dev/null 2>&1; then
+        local jh
+        jh="$(/usr/libexec/java_home -v 26 2>/dev/null || true)"
+        if [[ -n "${jh}" && -x "${jh}/bin/java" ]]; then
+            printf '%s\n' "${jh}"
+            return
+        fi
 
-if ! command -v ant >/dev/null 2>&1; then
-    command -v brew >/dev/null 2>&1 || fail "ant is missing and Homebrew is unavailable."
-    brew install ant
-fi
+        jh="$(/usr/libexec/java_home -v 27 2>/dev/null || true)"
+        if [[ -n "${jh}" && -x "${jh}/bin/java" ]]; then
+            printf '%s\n' "${jh}"
+            return
+        fi
 
-# ------------------------------------------------------------
-# Boot JDK
-# ------------------------------------------------------------
-# The current OpenJDK Mobile checkout used by this workflow reports
-# that its Boot JDK must be 26, 27, or 28.
+        jh="$(/usr/libexec/java_home -v 28 2>/dev/null || true)"
+        if [[ -n "${jh}" && -x "${jh}/bin/java" ]]; then
+            printf '%s\n' "${jh}"
+            return
+        fi
+    fi
 
-JAVA_HOME="${JAVA_HOME:-}"
+    fail "Could not find JDK 26/27/28. Install JDK 26 in GitHub Actions."
+}
 
-if [[ -z "${JAVA_HOME}" ]]; then
-    JAVA_HOME="$(/usr/libexec/java_home -v 26 2>/dev/null || true)"
-fi
-
-[[ -n "${JAVA_HOME}" ]] || fail "JDK 26/27/28 was not found."
-
-[[ -x "${JAVA_HOME}/bin/java" && -x "${JAVA_HOME}/bin/javac" ]] || \
-    fail "JAVA_HOME does not contain java/javac: ${JAVA_HOME}"
-
+JAVA_HOME="$(find_java_home)"
 export JAVA_HOME
 export PATH="${JAVA_HOME}/bin:${PATH}"
 
-JAVA_VERSION="$("${JAVA_HOME}/bin/java" -version 2>&1 | head -n 1)"
-JAVA_MAJOR="$("${JAVA_HOME}/bin/java" -version 2>&1 | sed -nE 's/.*version "([0-9]+).*/\1/p')"
+JAVA_VERSION="$("${JAVA_HOME}/bin/java" -version 2>&1 | head -n 1 || true)"
+JAVA_MAJOR="$("${JAVA_HOME}/bin/java" -version 2>&1 \
+    | sed -nE 's/.*version "([0-9]+).*/\1/p' | head -n 1)"
 
-log "Boot JDK: ${JAVA_HOME}"
-log "Java: ${JAVA_VERSION}"
+if [[ -z "${JAVA_MAJOR}" ]]; then
+    fail "Could not determine Java version. ${JAVA_VERSION}"
+fi
 
 case "${JAVA_MAJOR}" in
     26|27|28)
         ;;
     *)
-        fail "Boot JDK ${JAVA_MAJOR} is unsupported. Required: 26, 27, or 28."
+        fail "OpenJDK Mobile requires Boot JDK 26/27/28 for this build. Found Java ${JAVA_MAJOR}: ${JAVA_VERSION}"
         ;;
 esac
 
-# ------------------------------------------------------------
-# OpenJDK Mobile
-# ------------------------------------------------------------
+log "Using JAVA_HOME=${JAVA_HOME}"
+log "Using ${JAVA_VERSION}"
 
-if [[ ! -d "${OJDK_ROOT}/.git" ]]; then
-    log "Cloning OpenJDK Mobile"
-    git clone --depth 1 https://github.com/openjdk/mobile.git "${OJDK_ROOT}"
+for cmd in git curl unzip rsync xcrun autoconf ant make; do
+    need_cmd "${cmd}"
+done
+
+SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path)"
+SDK_VERSION="$(xcrun --sdk iphoneos --show-sdk-version)"
+
+[[ -d "${SDK_PATH}" ]] || fail "iPhoneOS SDK was not found."
+log "iPhoneOS SDK: ${SDK_PATH}"
+log "iPhoneOS SDK version: ${SDK_VERSION}"
+
+mkdir -p "${WORK_ROOT}" "${RUNTIME_ROOT}"
+
+# ---------------------------------------------------------------------------
+# OpenJDK Mobile
+# ---------------------------------------------------------------------------
+
+if [[ ! -d "${OPENJDK_DIR}/.git" ]]; then
+    log "Cloning OpenJDK Mobile..."
+    rm -rf "${OPENJDK_DIR}"
+    git clone --depth 1 "${OPENJDK_REPO}" "${OPENJDK_DIR}"
 else
-    log "OpenJDK Mobile checkout already exists"
+    log "OpenJDK Mobile already exists; keeping checkout."
 fi
 
-# ------------------------------------------------------------
-# Gluon mobile support
-# ------------------------------------------------------------
+cd "${OPENJDK_DIR}"
+
+# ---------------------------------------------------------------------------
+# mobile-support
+# ---------------------------------------------------------------------------
+
+SUPPORT_ZIP="${WORK_ROOT}/mobile-support-20250106.zip"
 
 if [[ ! -f "${SUPPORT_ZIP}" ]]; then
-    log "Downloading mobile-support-20250106.zip"
-    curl -fL --retry 4 --retry-delay 2 \
+    log "Downloading mobile-support..."
+    curl -L --fail --retry 3 --retry-delay 2 \
         -o "${SUPPORT_ZIP}" \
-        https://download2.gluonhq.com/mobile/mobile-support-20250106.zip
+        "${MOBILE_SUPPORT_URL}"
+else
+    log "Using cached ${SUPPORT_ZIP}"
 fi
 
 rm -rf "${SUPPORT_ROOT}"
 mkdir -p "${SUPPORT_ROOT}"
 
-log "Extracting mobile-support"
+log "Extracting mobile-support..."
 unzip -q "${SUPPORT_ZIP}" -d "${SUPPORT_ROOT}"
 
-# ------------------------------------------------------------
-# Locate libffi
-# ------------------------------------------------------------
+# mobile-support-20250106.zip currently extracts with an extra "support/"
+# directory in the archive:
+#
+#   ${SUPPORT_ROOT}/support/libffi/...
+#   ${SUPPORT_ROOT}/support/cups-2.3.6/...
+#
+# Some revisions/layouts may extract directly into ${SUPPORT_ROOT}.
+# Detect both layouts instead of assuming one.
 
-LIBFFI_INCLUDE=""
-LIBFFI_LIB=""
+ACTUAL_SUPPORT_ROOT="${SUPPORT_ROOT}"
 
-if [[ -f "${SUPPORT_ROOT}/libffi/include/ffi.h" ]]; then
-    LIBFFI_INCLUDE="${SUPPORT_ROOT}/libffi/include"
-fi
-
-if [[ -d "${SUPPORT_ROOT}/libffi/libs" ]]; then
-    LIBFFI_LIB="${SUPPORT_ROOT}/libffi/libs"
-elif [[ -d "${SUPPORT_ROOT}/libffi/lib" ]]; then
-    LIBFFI_LIB="${SUPPORT_ROOT}/libffi/lib"
-fi
-
-if [[ -z "${LIBFFI_INCLUDE}" ]]; then
-    LIBFFI_HEADER="$(find "${SUPPORT_ROOT}" -type f -name ffi.h -path '*/include/*' -print -quit 2>/dev/null || true)"
-    if [[ -n "${LIBFFI_HEADER}" ]]; then
-        LIBFFI_INCLUDE="$(dirname "${LIBFFI_HEADER}")"
+if [[ -d "${SUPPORT_ROOT}/support" ]]; then
+    if [[ -d "${SUPPORT_ROOT}/support/libffi" || \
+          -d "${SUPPORT_ROOT}/support/cups-2.3.6" ]]; then
+        ACTUAL_SUPPORT_ROOT="${SUPPORT_ROOT}/support"
     fi
 fi
 
-if [[ -z "${LIBFFI_LIB}" ]]; then
-    LIBFFI_ARCHIVE="$(find "${SUPPORT_ROOT}" -type f \( -name 'libffi.a' -o -name 'libffi.dylib' \) -print -quit 2>/dev/null || true)"
-    if [[ -n "${LIBFFI_ARCHIVE}" ]]; then
-        LIBFFI_LIB="$(dirname "${LIBFFI_ARCHIVE}")"
-    fi
-fi
+LIBFFI_INCLUDE="${ACTUAL_SUPPORT_ROOT}/libffi/include"
+LIBFFI_LIB="${ACTUAL_SUPPORT_ROOT}/libffi/libs"
 
-[[ -n "${LIBFFI_INCLUDE}" && -d "${LIBFFI_INCLUDE}" ]] || \
-    fail "Could not locate libffi include directory under ${SUPPORT_ROOT}"
+# OpenJDK Mobile's --with-cups-include expects the directory containing
+# "cups/cups.h", therefore:
+#
+#   --with-cups-include=/.../cups-2.3.6
+#
+# not ".../cups-2.3.6/cups" and not --with-cups=none.
+CUPS_INCLUDE="${ACTUAL_SUPPORT_ROOT}/cups-2.3.6"
+CUPS_HEADER="${CUPS_INCLUDE}/cups/cups.h"
 
-[[ -n "${LIBFFI_LIB}" && -d "${LIBFFI_LIB}" ]] || \
-    fail "Could not locate libffi library directory under ${SUPPORT_ROOT}"
+log "mobile-support root: ${ACTUAL_SUPPORT_ROOT}"
+
+[[ -d "${LIBFFI_INCLUDE}" ]] || \
+    fail "libffi headers were not found at: ${LIBFFI_INCLUDE}"
+
+[[ -d "${LIBFFI_LIB}" ]] || \
+    fail "libffi libraries were not found at: ${LIBFFI_LIB}"
+
+[[ -f "${CUPS_HEADER}" ]] || {
+    log "CUPS header was not found at expected path:"
+    log "  ${CUPS_HEADER}"
+    log "CUPS-related files found:"
+    find "${SUPPORT_ROOT}" -type f \( -name 'cups.h' -o -name 'libcups*.a' \) -print | head -n 100 || true
+    fail "CUPS headers are missing from mobile-support."
+}
 
 log "libffi include: ${LIBFFI_INCLUDE}"
-log "libffi lib:     ${LIBFFI_LIB}"
+log "libffi libs:    ${LIBFFI_LIB}"
+log "CUPS include:   ${CUPS_INCLUDE}"
+log "CUPS header:    ${CUPS_HEADER}"
 
-# ------------------------------------------------------------
-# Locate CUPS
-# ------------------------------------------------------------
-# IMPORTANT:
-# OpenJDK configure expects --with-cups=<ROOT>, where:
-#   <ROOT>/include/cups/cups.h
-#
-# Do not use --with-cups=none. "none" is interpreted as a path.
-
-CUPS_ROOT=""
-
-CUPS_HEADER="$(find "${SUPPORT_ROOT}" \
-    -type f \
-    -path '*/include/cups/cups.h' \
-    -print -quit 2>/dev/null || true)"
-
-if [[ -n "${CUPS_HEADER}" ]]; then
-    CUPS_ROOT="$(dirname "$(dirname "$(dirname "${CUPS_HEADER}")")")"
-fi
-
-if [[ -z "${CUPS_ROOT}" ]]; then
-    # Some archives put cups.h directly under a cups include tree.
-    CUPS_HEADER="$(find "${SUPPORT_ROOT}" \
-        -type f \
-        -path '*/cups/cups.h' \
-        -print -quit 2>/dev/null || true)"
-
-    if [[ -n "${CUPS_HEADER}" ]]; then
-        CUPS_INCLUDE_DIR="$(dirname "${CUPS_HEADER}")"
-
-        # Walk upward until include/cups/cups.h exists.
-        candidate="$(dirname "${CUPS_INCLUDE_DIR}")"
-        while [[ "${candidate}" != "/" ]]; do
-            if [[ -f "${candidate}/include/cups/cups.h" ]]; then
-                CUPS_ROOT="${candidate}"
-                break
-            fi
-            candidate="$(dirname "${candidate}")"
-        done
-    fi
-fi
-
-if [[ -z "${CUPS_ROOT}" ]]; then
-    echo
-    echo "ERROR: CUPS headers were not found in:"
-    echo "  ${SUPPORT_ROOT}"
-    echo
-    echo "Expected:"
-    echo "  <cups-root>/include/cups/cups.h"
-    echo
-    echo "CUPS-related files found:"
-    find "${SUPPORT_ROOT}" -type f \( \
-        -name 'cups.h' -o \
-        -name 'libcups.a' -o \
-        -name 'libcups.dylib' \
-    \) -print 2>/dev/null | head -50 || true
-    echo
-    echo "Archive top-level layout:"
-    find "${SUPPORT_ROOT}" -maxdepth 3 -type d -print | head -100 || true
-    fail "CUPS support files are missing or have an unsupported layout."
-fi
-
-[[ -f "${CUPS_ROOT}/include/cups/cups.h" ]] || \
-    fail "Detected CUPS root is invalid: ${CUPS_ROOT}"
-
-log "CUPS root: ${CUPS_ROOT}"
-log "CUPS header: ${CUPS_ROOT}/include/cups/cups.h"
-
-# ------------------------------------------------------------
-# iPhoneOS SDK
-# ------------------------------------------------------------
-
-SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path)"
-SDK_VERSION="$(xcrun --sdk iphoneos --show-sdk-version)"
-
-log "iPhoneOS SDK: ${SDK_VERSION}"
-log "SDK path: ${SDK_PATH}"
-
-# ------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Configure OpenJDK Mobile
-# ------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
-cd "${OJDK_ROOT}"
-
-# Always remove a previous configuration. This is important because
-# changing dependency paths after a failed configure can otherwise leave
-# stale configure values in build/ios-aarch64-zero-release.
+cd "${OPENJDK_DIR}"
 
 if [[ -d "build/${BUILD_CONF}" ]]; then
-    log "Removing previous OpenJDK configuration"
+    log "Removing stale OpenJDK build configuration..."
     rm -rf "build/${BUILD_CONF}"
 fi
 
-log "Configuring OpenJDK Mobile"
+log "Configuring OpenJDK Mobile for iOS arm64..."
 
 bash ./configure \
     --disable-warnings-as-errors \
@@ -253,237 +218,261 @@ bash ./configure \
     --with-boot-jdk="${JAVA_HOME}" \
     --with-libffi-include="${LIBFFI_INCLUDE}" \
     --with-libffi-lib="${LIBFFI_LIB}" \
-    --with-cups="${CUPS_ROOT}" \
+    --with-cups-include="${CUPS_INCLUDE}" \
     --with-sysroot="${SDK_PATH}"
 
-# ------------------------------------------------------------
-# Build OpenJDK Mobile
-# ------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Build static OpenJDK + JDK image
+# ---------------------------------------------------------------------------
 
-log "Building OpenJDK Mobile static libraries"
-
+log "Building OpenJDK static libraries..."
 make CONF="${BUILD_CONF}" static-libs-image
 
-log "Building OpenJDK Mobile static JDK image"
-
+log "Building OpenJDK static JDK image..."
 make CONF="${BUILD_CONF}" static-jdk-image
 
-STATIC_ROOT="${OJDK_ROOT}/build/${BUILD_CONF}/images/static-libs"
-JDK_ROOT="${OJDK_ROOT}/build/${BUILD_CONF}/images/jdk"
-LIBJVM="${STATIC_ROOT}/lib/zero/libjvm.a"
+[[ -f "${JVM_LIB_DIR}/libjvm.a" ]] || {
+    find "${OPENJDK_DIR}/build/${BUILD_CONF}" -name 'libjvm.a' -print | head -n 50 || true
+    fail "libjvm.a was not produced."
+}
 
-[[ -f "${LIBJVM}" ]] || fail "libjvm.a was not produced: ${LIBJVM}"
-[[ -d "${JDK_ROOT}" ]] || fail "JDK image was not produced: ${JDK_ROOT}"
+[[ -d "${JDK_IMAGE_DIR}" ]] || \
+    fail "Static JDK image was not produced: ${JDK_IMAGE_DIR}"
 
-# ------------------------------------------------------------
-# Copy native runtime
-# ------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Install runtime artifacts into CoreJ2
+# ---------------------------------------------------------------------------
 
-log "Copying JDK image"
+log "Installing OpenJDK runtime artifacts..."
 
-rsync -a --delete \
-    "${JDK_ROOT}/" \
-    "${OUT_ROOT}/jdk/"
+rm -rf "${RUNTIME_ROOT}/jdk"
+rm -rf "${RUNTIME_ROOT}/lib"
+rm -rf "${RUNTIME_ROOT}/include"
 
-log "Copying static OpenJDK libraries"
+mkdir -p \
+    "${RUNTIME_ROOT}/jdk" \
+    "${RUNTIME_ROOT}/lib" \
+    "${RUNTIME_ROOT}/include"
 
-rsync -a \
-    "${STATIC_ROOT}/lib/" \
-    "${OUT_ROOT}/lib/"
+rsync -a "${JDK_IMAGE_DIR}/" "${RUNTIME_ROOT}/jdk/"
+rsync -a "${STATIC_LIBS_DIR}/" "${RUNTIME_ROOT}/lib/"
 
-JNI_INCLUDE="$(
-    find "${OJDK_ROOT}/build/${BUILD_CONF}" \
-        -type d \
-        -path '*/support/headers/java.base' \
-        -print -quit 2>/dev/null || true
-)"
+# JNI/JVM headers can be in multiple locations depending on OpenJDK revision.
+HEADER_FOUND=0
 
-if [[ -z "${JNI_INCLUDE}" ]]; then
-    JNI_INCLUDE="${OJDK_ROOT}/src/java.base/share/native/include"
+for candidate in \
+    "${OPENJDK_DIR}/src/java.base/share/native/include" \
+    "${OPENJDK_DIR}/build/${BUILD_CONF}/support/modules_include/java.base"; do
+
+    if [[ -f "${candidate}/jni.h" ]]; then
+        rsync -a "${candidate}/" "${RUNTIME_ROOT}/include/"
+        HEADER_FOUND=1
+        break
+    fi
+done
+
+if [[ "${HEADER_FOUND}" -ne 1 ]]; then
+    find "${OPENJDK_DIR}/build/${BUILD_CONF}" \
+        "${OPENJDK_DIR}/src" \
+        -name jni.h -print 2>/dev/null | head -n 20 || true
+    fail "jni.h could not be located."
 fi
 
-[[ -d "${JNI_INCLUDE}" ]] || \
-    fail "JNI include directory not found: ${JNI_INCLUDE}"
+# Some native sources use jni_md.h from a platform-specific include folder.
+for md in \
+    "${OPENJDK_DIR}/src/java.base/share/native/include/darwin" \
+    "${OPENJDK_DIR}/src/java.base/unix/native/include" \
+    "${OPENJDK_DIR}/src/java.base/macosx/native/include"; do
 
-log "JNI include: ${JNI_INCLUDE}"
+    if [[ -f "${md}/jni_md.h" ]]; then
+        rsync -a "${md}/" "${RUNTIME_ROOT}/include/"
+    fi
+done
 
-cp -R "${JNI_INCLUDE}/." "${OUT_ROOT}/include/"
-
-# ------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # FreeJ2ME
-# ------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
-if [[ ! -d "${FREEJ2ME_ROOT}/.git" ]]; then
-    log "Cloning FreeJ2ME"
-    git clone --depth 1 https://github.com/hex007/freej2me.git "${FREEJ2ME_ROOT}"
+if [[ ! -d "${FREEJ2ME_DIR}/.git" ]]; then
+    log "Cloning FreeJ2ME..."
+    rm -rf "${FREEJ2ME_DIR}"
+    git clone --depth 1 "${FREEJ2ME_REPO}" "${FREEJ2ME_DIR}"
 else
-    log "FreeJ2ME checkout already exists"
+    log "FreeJ2ME already exists; keeping checkout."
 fi
 
-rm -rf "${FREEJ2ME_CLASSES}"
+FREEJ2ME_SRC="${FREEJ2ME_DIR}/src"
+FREEJ2ME_BUILD="${WORK_ROOT}/freej2me-build"
+FREEJ2ME_CLASSES="${FREEJ2ME_BUILD}/classes"
+FREEJ2ME_JAR="${RUNTIME_ROOT}/freej2me-core.jar"
+
+[[ -d "${FREEJ2ME_SRC}" ]] || \
+    fail "FreeJ2ME source directory was not found: ${FREEJ2ME_SRC}"
+
+rm -rf "${FREEJ2ME_BUILD}"
 mkdir -p "${FREEJ2ME_CLASSES}"
 
-FREE_SOURCES_LIST="${BUILD_ROOT}/freej2me-sources.txt"
+# Collect FreeJ2ME Java sources.
+mapfile -t FREEJ2ME_JAVA_FILES < <(
+    find "${FREEJ2ME_SRC}" -type f -name '*.java' | sort
+)
 
-find "${FREEJ2ME_ROOT}/src" \
-    -type f \
-    -name '*.java' \
-    | sort > "${FREE_SOURCES_LIST}"
+((${#FREEJ2ME_JAVA_FILES[@]} > 0)) || \
+    fail "No FreeJ2ME Java source files were found."
 
-[[ -d "${BOOTSTRAP_ROOT}" ]] || \
-    fail "CoreJ2 bootstrap directory not found: ${BOOTSTRAP_ROOT}"
+# Collect CoreJ2 bootstrap Java sources if present.
+BOOTSTRAP_JAVA_FILES=()
+if [[ -d "${BOOTSTRAP_DIR}" ]]; then
+    while IFS= read -r -d '' f; do
+        BOOTSTRAP_JAVA_FILES+=("${f}")
+    done < <(find "${BOOTSTRAP_DIR}" -type f -name '*.java' -print0 | sort -z)
+fi
 
-find "${BOOTSTRAP_ROOT}" \
-    -maxdepth 1 \
-    -type f \
-    -name '*.java' \
-    | sort >> "${FREE_SOURCES_LIST}"
+ALL_JAVA_FILES=(
+    "${FREEJ2ME_JAVA_FILES[@]}"
+    "${BOOTSTRAP_JAVA_FILES[@]}"
+)
 
-[[ -s "${FREE_SOURCES_LIST}" ]] || \
-    fail "No FreeJ2ME/CoreJ2 Java source files found."
+log "Compiling ${#ALL_JAVA_FILES[@]} Java sources..."
 
-SOURCE_COUNT="$(wc -l < "${FREE_SOURCES_LIST}" | tr -d ' ')"
+# Prefer the runtime's javac if the JDK image contains one; otherwise use
+# the Boot JDK's javac for the build-time compilation.
+JAVAC_BIN="${JAVA_HOME}/bin/javac"
 
-log "Compiling FreeJ2ME + CoreJ2 bootstrap"
-log "Java source count: ${SOURCE_COUNT}"
+if [[ -x "${RUNTIME_ROOT}/jdk/bin/javac" ]]; then
+    JAVAC_BIN="${RUNTIME_ROOT}/jdk/bin/javac"
+fi
 
-"${JAVA_HOME}/bin/javac" \
-    -encoding UTF-8 \
-    -g:none \
+[[ -x "${JAVAC_BIN}" ]] || \
+    fail "javac was not found."
+
+"${JAVAC_BIN}" \
     -source 8 \
     -target 8 \
+    -encoding UTF-8 \
     -d "${FREEJ2ME_CLASSES}" \
-    @"${FREE_SOURCES_LIST}"
+    "${ALL_JAVA_FILES[@]}"
 
-FREEJ2ME_JAR="${OUT_ROOT}/freej2me-core.jar"
+log "Creating ${FREEJ2ME_JAR}..."
 
 rm -f "${FREEJ2ME_JAR}"
 
 (
     cd "${FREEJ2ME_CLASSES}"
-    "${JAVA_HOME}/bin/jar" cf "${FREEJ2ME_JAR}" .
+    jar cf "${FREEJ2ME_JAR}" .
 )
 
-if [[ -d "${FREEJ2ME_ROOT}/resources" ]]; then
-    (
-        cd "${FREEJ2ME_ROOT}"
-        "${JAVA_HOME}/bin/jar" uf "${FREEJ2ME_JAR}" resources
-    )
-fi
-
-if [[ -d "${FREEJ2ME_ROOT}/META-INF" ]]; then
-    (
-        cd "${FREEJ2ME_ROOT}"
-        "${JAVA_HOME}/bin/jar" uf "${FREEJ2ME_JAR}" META-INF
-    )
-fi
-
-[[ -f "${FREEJ2ME_JAR}" ]] || \
+[[ -s "${FREEJ2ME_JAR}" ]] || \
     fail "freej2me-core.jar was not created."
 
-# ------------------------------------------------------------
-# Xcode runtime configuration
-# ------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Generate CoreJ2Runtime.xcconfig
+# ---------------------------------------------------------------------------
 
-mapfile -t STATIC_LIBS < <(
-    find "${OUT_ROOT}/lib" \
+XCCONFIG_DIR="${RUNTIME_ROOT}"
+XCCONFIG="${XCCONFIG_DIR}/CoreJ2Runtime.xcconfig"
+
+# Gather static archives. Do not hard-code the complete OpenJDK archive list:
+# OpenJDK Mobile can change it between revisions.
+mapfile -t STATIC_ARCHIVES < <(
+    find "${RUNTIME_ROOT}/lib" \
         -type f \
-        -name '*.a' \
-        | sort
+        \( -name '*.a' \) \
+        -print | sort
 )
 
-[[ "${#STATIC_LIBS[@]}" -gt 0 ]] || \
-    fail "No OpenJDK static archives found."
-
-STATIC_LDFLAGS=""
-
-for lib in "${STATIC_LIBS[@]}"; do
-    STATIC_LDFLAGS+=" \"${lib}\""
+LIBRARY_SEARCH_PATHS_LINE="LIBRARY_SEARCH_PATHS ="
+for dir in "${RUNTIME_ROOT}/lib" \
+           "${RUNTIME_ROOT}/lib/lib" \
+           "${RUNTIME_ROOT}/lib/lib/zero"; do
+    if [[ -d "${dir}" ]]; then
+        LIBRARY_SEARCH_PATHS_LINE+=" \"${dir}\""
+    fi
 done
 
-cat > "${OUT_ROOT}/CoreJ2Runtime.xcconfig" <<CFG
-// Generated by scripts/ios-runtime/prepare-runtime.sh
+HEADER_SEARCH_PATHS_LINE="HEADER_SEARCH_PATHS ="
+HEADER_SEARCH_PATHS_LINE+=" \"${RUNTIME_ROOT}/include\""
+HEADER_SEARCH_PATHS_LINE+=" \"${LIBFFI_INCLUDE}\""
 
-COREJ2_RUNTIME_ROOT = ${OUT_ROOT}
+# Add any OpenJDK native include directories that contain JNI headers.
+while IFS= read -r header_dir; do
+    HEADER_SEARCH_PATHS_LINE+=" \"${header_dir}\""
+done < <(
+    find "${OPENJDK_DIR}/src" "${OPENJDK_DIR}/build/${BUILD_CONF}" \
+        -type f -name 'jni.h' -print 2>/dev/null \
+        | xargs -r -n1 dirname \
+        | sort -u
+)
 
-HEADER_SEARCH_PATHS = \$(inherited) "${OUT_ROOT}/include"
-LIBRARY_SEARCH_PATHS = \$(inherited) "${OUT_ROOT}/lib"
+{
+    echo "// Generated by scripts/ios-runtime/prepare-runtime.sh"
+    echo "// Do not edit manually."
+    echo
+    echo "COREJ2_RUNTIME_ROOT = \"${RUNTIME_ROOT}\""
+    echo "COREJ2_RUNTIME_JDK = \"${RUNTIME_ROOT}/jdk\""
+    echo "COREJ2_RUNTIME_JNI_INCLUDE = \"${RUNTIME_ROOT}/include\""
+    echo "COREJ2_FREEJ2ME_JAR = \"${FREEJ2ME_JAR}\""
+    echo
+    echo "${HEADER_SEARCH_PATHS_LINE}"
+    echo "${LIBRARY_SEARCH_PATHS_LINE}"
+    echo
+    echo "OTHER_LDFLAGS = \$(inherited) -lc++ -lz -liconv"
+    echo
+} > "${XCCONFIG}"
 
-OTHER_LDFLAGS = \$(inherited)${STATIC_LDFLAGS} -lc++ -lz -liconv
-CFG
+# Add explicit static libraries after the generic flags. Ordering is retained
+# from the OpenJDK build output and can be consumed by the project xcconfig.
+if ((${#STATIC_ARCHIVES[@]} > 0)); then
+    {
+        echo "// OpenJDK static archives:"
+        for archive in "${STATIC_ARCHIVES[@]}"; do
+            printf '// %s\n' "${archive}"
+        done
+    } >> "${XCCONFIG}"
+fi
 
-# ------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Runtime manifest
-# ------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
-OPENJDK_COMMIT="$(git -C "${OJDK_ROOT}" rev-parse HEAD)"
-FREEJ2ME_COMMIT="$(git -C "${FREEJ2ME_ROOT}" rev-parse HEAD)"
+MANIFEST="${RUNTIME_ROOT}/RUNTIME-MANIFEST.txt"
 
-LIBJVM_BYTES="$(wc -c < "${LIBJVM}" | tr -d ' ')"
-FREEJ2ME_BYTES="$(wc -c < "${FREEJ2ME_JAR}" | tr -d ' ')"
+{
+    echo "CoreJ2 embedded runtime"
+    echo
+    echo "Generated: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    echo "Repository root: ${ROOT_DIR}"
+    echo "OpenJDK target: aarch64-macos-ios"
+    echo "OpenJDK configuration: ${BUILD_CONF}"
+    echo "iPhoneOS SDK: ${SDK_VERSION}"
+    echo "Boot JDK: ${JAVA_VERSION}"
+    echo
+    echo "OpenJDK source: ${OPENJDK_REPO}"
+    echo "FreeJ2ME source: ${FREEJ2ME_REPO}"
+    echo "mobile-support: ${MOBILE_SUPPORT_URL}"
+    echo
+    echo "OpenJDK JDK image: ${RUNTIME_ROOT}/jdk"
+    echo "OpenJDK static libs: ${RUNTIME_ROOT}/lib"
+    echo "JNI headers: ${RUNTIME_ROOT}/include"
+    echo "FreeJ2ME core JAR: ${FREEJ2ME_JAR}"
+    echo "Generated xcconfig: ${XCCONFIG}"
+    echo
+    echo "CUPS include root: ${CUPS_INCLUDE}"
+    echo "CUPS header: ${CUPS_HEADER}"
+    echo "libffi include: ${LIBFFI_INCLUDE}"
+    echo "libffi libs: ${LIBFFI_LIB}"
+    echo
+    echo "Static archives:"
+    for archive in "${STATIC_ARCHIVES[@]}"; do
+        echo "  ${archive}"
+    done
+} > "${MANIFEST}"
 
-cat > "${OUT_ROOT}/RUNTIME-MANIFEST.txt" <<MANIFEST
-CoreJ2 embedded iOS runtime
-
-iPhoneOS SDK:
-${SDK_VERSION}
-
-Boot JDK:
-${JAVA_VERSION}
-
-OpenJDK Mobile commit:
-${OPENJDK_COMMIT}
-
-FreeJ2ME commit:
-${FREEJ2ME_COMMIT}
-
-CUPS root:
-${CUPS_ROOT}
-
-libjvm.a bytes:
-${LIBJVM_BYTES}
-
-freej2me-core.jar bytes:
-${FREEJ2ME_BYTES}
-
-Static OpenJDK archives:
-${#STATIC_LIBS[@]}
-
-JDK image:
-${OUT_ROOT}/jdk
-
-FreeJ2ME/CoreJ2 jar:
-${OUT_ROOT}/freej2me-core.jar
-MANIFEST
-
-# ------------------------------------------------------------
-# Final verification
-# ------------------------------------------------------------
-
-log "Runtime preparation completed"
-
-[[ -f "${OUT_ROOT}/lib/libjvm.a" ]] || \
-    fail "Final runtime is missing libjvm.a"
-
-[[ -f "${OUT_ROOT}/freej2me-core.jar" ]] || \
-    fail "Final runtime is missing freej2me-core.jar"
-
-[[ -f "${OUT_ROOT}/CoreJ2Runtime.xcconfig" ]] || \
-    fail "Final runtime is missing CoreJ2Runtime.xcconfig"
-
-[[ -d "${OUT_ROOT}/jdk" ]] || \
-    fail "Final runtime is missing JDK image"
-
-cat "${OUT_ROOT}/RUNTIME-MANIFEST.txt"
-
-echo
-echo "Runtime size:"
-du -sh "${OUT_ROOT}"
-
-echo
-echo "libjvm.a:"
-ls -lh "${OUT_ROOT}/lib/libjvm.a"
-
-echo
-echo "freej2me-core.jar:"
-ls -lh "${OUT_ROOT}/freej2me-core.jar"
+log "Runtime preparation completed successfully."
+log "Runtime root: ${RUNTIME_ROOT}"
+log "JDK image:    ${RUNTIME_ROOT}/jdk"
+log "Static libs:  ${RUNTIME_ROOT}/lib"
+log "JNI include:  ${RUNTIME_ROOT}/include"
+log "FreeJ2ME JAR: ${FREEJ2ME_JAR}"
+log "xcconfig:     ${XCCONFIG}"
+log "manifest:     ${MANIFEST}"
