@@ -14,8 +14,8 @@ rm -rf "${OUT_ROOT}" && mkdir -p "${OUT_ROOT}/lib" "${OUT_ROOT}/include" "${OUT_
 log(){ echo "[CoreJ2 runtime] $*"; }
 command -v autoconf >/dev/null 2>&1 || brew install autoconf
 command -v ant >/dev/null 2>&1 || brew install ant
-export JAVA_HOME="${JAVA_HOME:-$(/usr/libexec/java_home -v 24 2>/dev/null || true)}"
-[[ -n "${JAVA_HOME}" && -x "${JAVA_HOME}/bin/javac" ]] || { echo "ERROR: JDK 24 is required." >&2; exit 1; }
+export JAVA_HOME="${JAVA_HOME:-$(/usr/libexec/java_home -v 26 2>/dev/null || true)}"
+[[ -n "${JAVA_HOME}" && -x "${JAVA_HOME}/bin/javac" ]] || { echo "ERROR: JDK 26 is required." >&2; exit 1; }
 if [[ ! -d "${OJDK_ROOT}/.git" ]]; then git clone --depth 1 https://github.com/openjdk/mobile.git "${OJDK_ROOT}"; fi
 if [[ ! -f "${SUPPORT_ZIP}" ]]; then curl -fL --retry 4 -o "${SUPPORT_ZIP}" https://download2.gluonhq.com/mobile/mobile-support-20250106.zip; fi
 rm -rf "${SUPPORT_ROOT}" && mkdir -p "${SUPPORT_ROOT}" && unzip -q "${SUPPORT_ZIP}" -d "${SUPPORT_ROOT}"
