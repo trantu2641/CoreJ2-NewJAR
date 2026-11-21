@@ -45,8 +45,9 @@ jobs:
       - name: Prepare embedded runtime
         run: |
           set -o pipefail
-          ./scripts/ios-runtime/prepare-runtime.sh 2>&1 | tee build-runtime.log
-
+          chmod +x scripts/ios-runtime/prepare-runtime.sh
+          bash scripts/ios-runtime/prepare-runtime.sh 2>&1 | tee build-runtime.log
+          
       - name: Verify runtime artifacts
         run: |
           set -e
