@@ -129,10 +129,17 @@ fi
 [[ -d "${SUPPORT_ROOT}/libffi" ]] || die "Invalid mobile-support layout: ${SUPPORT_ROOT}/libffi not found."
 
 LIBFFI_INCLUDE="${SUPPORT_ROOT}/libffi/include"
-LIBFFI_LIB="${SUPPORT_ROOT}/libffi/lib"
+LIBFFI_LIB="${SUPPORT_ROOT}/libffi/libs"
 
 [[ -d "${LIBFFI_INCLUDE}" ]] || die "libffi include directory not found: ${LIBFFI_INCLUDE}"
-[[ -d "${LIBFFI_LIB}" ]] || die "libffi library directory not found: ${LIBFFI_LIB}"
+
+# mobile-support currently ships libffi libraries under "libs".
+# Accept "lib" as a fallback for older/different archives.
+if [[ ! -d "${LIBFFI_LIB}" && -d "${SUPPORT_ROOT}/libffi/lib" ]]; then
+    LIBFFI_LIB="${SUPPORT_ROOT}/libffi/lib"
+fi
+
+[[ -d "${LIBFFI_LIB}" ]] || die "libffi library directory not found. Checked: ${SUPPORT_ROOT}/libffi/libs and ${SUPPORT_ROOT}/libffi/lib"
 
 # CUPS is located under support/support/cups-2.3.6/cups/cups.h in the
 # mobile-support archive currently used by this project.
