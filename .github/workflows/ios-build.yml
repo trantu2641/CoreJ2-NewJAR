@@ -12,58 +12,146 @@ permissions:
 
 jobs:
   build-ios:
-    name: Build CoreJ2 IPA with Embedded OpenJDK + FreeJ2ME
+    name: Build CoreJ2 IPA with Embedded OpenJDK
     runs-on: macos-26
 
     steps:
+      # ==========================================================
+      # 1. Checkout
+      # ==========================================================
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
           submodules: recursive
           fetch-depth: 0
 
+      # ==========================================================
+      # 2. Select Xcode 26.6
+      # ==========================================================
       - name: Select installed Xcode
+        shell: bash
         run: |
-          set -e
-          XCODE_PATH="$(find /Applications -maxdepth 1 -type d -name 'Xcode*.app' | sort -V | tail -n 1)"
+          set -euo pipefail
+
+          XCODE_PATH="/Applications/Xcode_26.6.app"
+
+          if [ ! -d "$XCODE_PATH" ]; then
+            XCODE_PATH="$(find /Applications \
+              -maxdepth 1 \
+              -type d \
+              -name 'Xcode*.app' \
+              | sort -V \
+              | tail -n 1)"
+          fi
+
           test -n "$XCODE_PATH"
+          test -d "$XCODE_PATH"
+
+          echo "Using Xcode:"
+          echo "$XCODE_PATH"
+
           sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
+      # ==========================================================
+      # 3. Dependencies
+      # ==========================================================
       - name: Install build dependencies
+        shell: bash
         run: |
-          brew update
-          brew install autoconf ant
+          set -euo pipefail
 
+          brew install autoconf ant || true
+
+          autoconf --version | head -n 1 || true
+          ant -version || true
+
+      # ==========================================================
+      # 4. JDK 26
+      # ==========================================================
       - name: Install JDK 26
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '26'
-          
-      - name: Prepare embedded runtime
-        run: |
-          set -o pipefail
-          chmod +x scripts/ios-runtime/prepare-runtime.sh
-          bash scripts/ios-runtime/prepare-runtime.sh 2>&1 | tee build-runtime.log
-          
-      - name: Verify runtime artifacts
-        run: |
-          set -e
-          test -f build/ios-runtime/lib/libjvm.a
-          test -f build/ios-runtime/freej2me-core.jar
-          test -f build/ios-runtime/CoreJ2Runtime.xcconfig
-          echo '=== Runtime manifest ==='
-          cat build/ios-runtime/RUNTIME-MANIFEST.txt
-          echo '=== Runtime size ==='
-          du -sh build/ios-runtime
-          du -h build/ios-runtime/lib/libjvm.a build/ios-runtime/freej2me-core.jar
 
+      # ==========================================================
+      # 5. Prepare OpenJDK + FreeJ2ME runtime
+      # ==========================================================
+      - name: Prepare embedded runtime
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          test -f scripts/ios-runtime/prepare-runtime.sh
+
+          chmod +x scripts/ios-runtime/prepare-runtime.sh
+
+          bash scripts/ios-runtime/prepare-runtime.sh \
+            2>&1 | tee build-runtime.log
+
+      # ==========================================================
+      # 6. Verify runtime
+      # ==========================================================
+      - name: Verify runtime artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RUNTIME="build/ios-runtime"
+
+          echo "========================================"
+          echo "Checking runtime"
+          echo "========================================"
+
+          test -d "$RUNTIME"
+
+          # IMPORTANT:
+          # prepare-runtime.sh creates libjvm.a directly
+          # under build/ios-runtime, NOT build/ios-runtime/lib/
+          test -f "$RUNTIME/libjvm.a"
+
+          test -f "$RUNTIME/libjava.a"
+          test -f "$RUNTIME/libjli.a"
+          test -f "$RUNTIME/libnet.a"
+          test -f "$RUNTIME/libnio.a"
+          test -f "$RUNTIME/libjimage.a"
+          test -f "$RUNTIME/libzip.a"
+          test -f "$RUNTIME/libverify.a"
+          test -f "$RUNTIME/libmanagement.a"
+
+          test -f "$RUNTIME/CoreJ2Runtime.xcconfig"
+
+          echo ""
+          echo "OpenJDK runtime:"
+          ls -lh "$RUNTIME/libjvm.a"
+
+          echo ""
+          echo "Runtime xcconfig:"
+          cat "$RUNTIME/CoreJ2Runtime.xcconfig"
+
+          echo ""
+          echo "Runtime size:"
+          du -sh "$RUNTIME"
+
+          echo ""
+          echo "Runtime files:"
+          find "$RUNTIME" -maxdepth 1 -type f \
+            -name '*.a' \
+            -exec basename {} \; | sort
+
+      # ==========================================================
+      # 7. Build iOS app
+      # ==========================================================
       - name: Build CoreJ2
+        shell: bash
         run: |
           set -o pipefail
+
           mkdir -p build/DerivedData
+
           xcodebuild \
             -project JavaOne.xcodeproj \
             -scheme JavaOne \
@@ -78,42 +166,187 @@ jobs:
             IPHONEOS_DEPLOYMENT_TARGET=16.4 \
             build 2>&1 | tee build/xcodebuild.log
 
+      # ==========================================================
+      # 8. Locate .app
+      # ==========================================================
       - name: Locate app
+        shell: bash
         run: |
-          set -e
-          APP_PATH="$(find build/DerivedData/Build/Products -type d -name '*.app' -print -quit)"
+          set -euo pipefail
+
+          APP_PATH="$(find \
+            build/DerivedData/Build/Products \
+            -type d \
+            -name '*.app' \
+            -print \
+            -quit)"
+
           test -n "$APP_PATH"
+          test -d "$APP_PATH"
+
           echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+
+          echo ""
+          echo "========================================"
+          echo "Application"
+          echo "========================================"
           echo "$APP_PATH"
 
-      - name: Bundle embedded runtime
-        run: |
-          set -e
-          rm -rf "$APP_PATH/Runtime"
-          cp -R build/ios-runtime "$APP_PATH/Runtime"
-          rm -f "$APP_PATH/Runtime/CoreJ2Runtime.xcconfig" "$APP_PATH/Runtime/RUNTIME-MANIFEST.txt"
           du -sh "$APP_PATH"
-          ls -lh "$APP_PATH/Runtime/lib/libjvm.a"
-          ls -lh "$APP_PATH/Runtime/freej2me-core.jar"
 
-      - name: Create unsigned IPA
+      # ==========================================================
+      # 9. Embed ONLY runtime files needed by CoreJ2
+      # ==========================================================
+      - name: Bundle embedded runtime
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
+
+          RUNTIME_SRC="build/ios-runtime"
+          RUNTIME_DST="$APP_PATH/Runtime"
+
+          rm -rf "$RUNTIME_DST"
+          mkdir -p "$RUNTIME_DST"
+
+          echo "Copying runtime libraries..."
+
+          # OpenJDK static libraries
+          for f in \
+            libjvm.a \
+            libjava.a \
+            libjli.a \
+            libnet.a \
+            libnio.a \
+            libjimage.a \
+            libzip.a \
+            libverify.a \
+            libmanagement.a \
+            libmanagement_ext.a \
+            libinstrument.a \
+            libprefs.a \
+            libextnet.a \
+            libj2gss.a \
+            libj2pcsc.a \
+            libj2pkcs11.a \
+            libdt_socket.a \
+            libjsig.a \
+            libsyslookup.a \
+            libfallbackLinker.a
+          do
+            if [ -f "$RUNTIME_SRC/$f" ]; then
+              cp "$RUNTIME_SRC/$f" "$RUNTIME_DST/"
+            fi
+          done
+
+          # Static libraries generated inside static-libs/lib
+          if [ -d "$RUNTIME_SRC/static-libs/lib" ]; then
+            mkdir -p "$RUNTIME_DST/static-libs/lib"
+
+            cp "$RUNTIME_SRC"/static-libs/lib/*.a \
+              "$RUNTIME_DST/static-libs/lib/" \
+              2>/dev/null || true
+
+            if [ -d "$RUNTIME_SRC/static-libs/lib/zero" ]; then
+              mkdir -p "$RUNTIME_DST/static-libs/lib/zero"
+              cp "$RUNTIME_SRC"/static-libs/lib/zero/* \
+                "$RUNTIME_DST/static-libs/lib/zero/" \
+                2>/dev/null || true
+            fi
+          fi
+
+          # Keep Java runtime configuration
+          cp "$RUNTIME_SRC/CoreJ2Runtime.xcconfig" \
+             "$RUNTIME_DST/"
+
+          # FreeJ2ME is optional because current repository
+          # does not contain pom.xml.
+          if [ -f "$RUNTIME_SRC/freej2me-core.jar" ]; then
+            cp "$RUNTIME_SRC/freej2me-core.jar" \
+               "$RUNTIME_DST/"
+          fi
+
+          echo ""
+          echo "========================================"
+          echo "Embedded Runtime"
+          echo "========================================"
+
+          find "$RUNTIME_DST" -type f -maxdepth 3 \
+            -print | sort
+
+          echo ""
+          echo "Embedded runtime size:"
+          du -sh "$RUNTIME_DST"
+
+          echo ""
+          echo "libjvm:"
+          ls -lh "$RUNTIME_DST/libjvm.a"
+
+      # ==========================================================
+      # 10. Create unsigned IPA
+      # ==========================================================
+      - name: Create unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+
           rm -rf build/Payload
           mkdir -p build/Payload
-          cp -R "$APP_PATH" build/Payload/
-          cd build
-          zip -qry CoreJ2-iOS16.4-FullRuntime-unsigned.ipa Payload
-          cd ..
-          ls -lh build/CoreJ2-iOS16.4-FullRuntime-unsigned.ipa
 
+          cp -R "$APP_PATH" build/Payload/
+
+          cd build
+
+          rm -f CoreJ2-iOS16.4-FullRuntime-unsigned.ipa
+
+          zip -qry \
+            CoreJ2-iOS16.4-FullRuntime-unsigned.ipa \
+            Payload
+
+          cd ..
+
+          echo ""
+          echo "========================================"
+          echo "IPA"
+          echo "========================================"
+
+          ls -lh \
+            build/CoreJ2-iOS16.4-FullRuntime-unsigned.ipa
+
+      # ==========================================================
+      # 11. Verify IPA
+      # ==========================================================
+      - name: Verify IPA contents
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IPA="build/CoreJ2-iOS16.4-FullRuntime-unsigned.ipa"
+
+          test -f "$IPA"
+
+          echo "Checking IPA..."
+
+          unzip -l "$IPA" | grep -E \
+            'Payload/.*\.app/Runtime/libjvm\.a|Payload/.*\.app/Runtime/CoreJ2Runtime\.xcconfig'
+
+          echo ""
+          echo "IPA size:"
+          ls -lh "$IPA"
+
+      # ==========================================================
+      # 12. Upload IPA
+      # ==========================================================
       - name: Upload full IPA
         uses: actions/upload-artifact@v6
         with:
           name: CoreJ2-iOS-16.4-FullRuntime
           path: build/CoreJ2-iOS16.4-FullRuntime-unsigned.ipa
           if-no-files-found: error
+          compression-level: 0
 
+      # ==========================================================
+      # 13. Upload Xcode log
+      # ==========================================================
       - name: Upload xcodebuild log
         if: always()
         uses: actions/upload-artifact@v6
@@ -121,7 +354,11 @@ jobs:
           name: CoreJ2-xcodebuild-log
           path: build/xcodebuild.log
           if-no-files-found: ignore
+          compression-level: 6
 
+      # ==========================================================
+      # 14. Upload runtime log
+      # ==========================================================
       - name: Upload runtime build log
         if: always()
         uses: actions/upload-artifact@v6
@@ -129,3 +366,4 @@ jobs:
           name: CoreJ2-runtime-build-log
           path: build-runtime.log
           if-no-files-found: ignore
+          compression-level: 6
