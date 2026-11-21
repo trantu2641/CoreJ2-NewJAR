@@ -146,18 +146,13 @@ fi
 log "Configuring OpenJDK for aarch64 iOS..."
 bash ./configure \
     --disable-warnings-as-errors \
-    --openjdk-target=aarch64-apple-ios \
-    --with-toolchain-type=clang \
-    --with-jvm-variants=zero \
+    --openjdk-target=aarch64-macos-ios \
     --with-boot-jdk="${JAVA_HOME}" \
     --with-libffi-include="${LIBFFI_INCLUDE}" \
     --with-libffi-lib="${LIBFFI_LIB}" \
     --with-cups-include="${CUPS_INCLUDE}" \
-    --with-sysroot="${SDK_PATH}" \
-    --disable-cds \
-    --disable-manpages \
-    --disable-jvm-feature-serviceability-agent
-
+    --with-sysroot="${SDK_PATH}"
+    
 # Save configure summary for diagnostics.
 if [[ -f "${OPENJDK_BUILD_DIR}/spec.gmk" ]]; then
     cp "${OPENJDK_BUILD_DIR}/spec.gmk" "${WORK_ROOT}/openjdk-spec-${BUILD_CONF}.gmk"
