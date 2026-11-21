@@ -36,12 +36,13 @@ jobs:
           brew update
           brew install autoconf ant
 
-      - name: Install JDK 24
+      - name: Install JDK 26
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: '24'
-
+          java-version: '26'
+          cache: maven
+          
       - name: Prepare embedded runtime
         run: |
           set -o pipefail
