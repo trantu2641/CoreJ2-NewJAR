@@ -41,7 +41,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '26'
-          cache: maven
           
       - name: Prepare embedded runtime
         run: |
